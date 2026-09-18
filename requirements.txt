@@ -1,4 +1,4 @@
-# 新闻天气播报 — 依赖列表
+# 新闻天气播报 — 依赖列表（免费版，无需 API Key）
 # 安装：pip install -r requirements.txt
 
 PyQt6>=6.5.0

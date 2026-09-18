@@ -1,162 +1,124 @@
 # -*- coding: utf-8 -*-
 """
-新闻 API 封装
-支持两种数据源：
-  1. NewsAPI (https://newsapi.org)  — 国际新闻，免费版每天 100 次
-  2. 聚合数据 (https://www.juhe.cn) — 国内新闻，免费版每天 100 次
+新闻 API 封装 — 改用 RSS 免费新闻源
+无需 API Key，直接抓取 RSS 订阅源
 """
 import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 
 class NewsAPI:
-    """新闻 API 封装类，支持 NewsAPI 和聚合数据两种数据源"""
+    """RSS 免费新闻源封装类（无需 API Key）"""
 
-    # 分类映射
-    CATEGORY_MAP_NEWSAPI = {
-        "top": None,           # 头条（不传 category 参数）
-        "technology": "technology",
-        "sports": "sports",
-        "business": "business",
-        "entertainment": "entertainment"
+    RSS_FEEDS = {
+        "top": [
+            "http://feeds.bbci.co.uk/chinese/simp/rss.xml",
+            "https://www.chinanews.com.cn/rss/scroll.xml",
+        ],
+        "technology": ["https://www.chinanews.com.cn/rss/it.xml"],
+        "sports": ["https://www.chinanews.com.cn/rss/sports.xml"],
+        "business": ["https://www.chinanews.com.cn/rss/finance.xml"],
+        "entertainment": ["https://www.chinanews.com.cn/rss/ent.xml"],
     }
 
-    CATEGORY_MAP_JUHE = {
-        "top": "top",
-        "technology": "keji",
-        "sports": "tiyu",
-        "business": "caijing",
-        "entertainment": "yule"
+    KEYWORDS = {
+        "technology": ["科技", "技术", "互联网", "AI", "芯片", "手机", "电脑", "软件"],
+        "sports": ["体育", "足球", "篮球", "奥运", "比赛", "冠军", "联赛"],
+        "business": ["经济", "金融", "股市", "商业", "投资", "基金", "银行"],
+        "entertainment": ["娱乐", "电影", "音乐", "明星", "综艺", "电视剧"],
     }
 
-    def __init__(self, api_key, provider="newsapi"):
-        self.api_key = api_key
-        self.provider = provider
+    def __init__(self, api_key="", provider="rss"):
+        self._cached_top = None
 
     def _is_ready(self):
-        """检查 API Key 是否已配置"""
-        return bool(self.api_key)
+        return True
 
     def get_headlines(self, category="top", page=1, page_size=20):
-        """
-        获取新闻列表
-        :param category: 分类 key（top/technology/sports/business/entertainment）
-        :return: 新闻列表，每项为 dict（title / source / time / url / content / description）
-        """
-        if not self._is_ready():
-            return []
-        if self.provider == "newsapi":
-            return self._get_newsapi(category, page, page_size)
-        elif self.provider == "juhe":
-            return self._get_juhe(category)
-        return []
-
-    # ────────────── NewsAPI ──────────────
-
-    def _get_newsapi(self, category, page, page_size):
-        """从 NewsAPI 获取新闻"""
-        url = "https://newsapi.org/v2/top-headlines"
-        params = {
-            "apiKey": self.api_key,
-            "page": page,
-            "pageSize": page_size,
-            "country": "cn"
-        }
-        cat = self.CATEGORY_MAP_NEWSAPI.get(category)
-        if cat:
-            params["category"] = cat
-
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            data = resp.json()
-            if data.get("status") == "ok":
-                articles = data.get("articles", [])
-                return [self._format_newsapi_article(a) for a in articles]
-            return []
-        except Exception:
-            return []
-
-    def _format_newsapi_article(self, a):
-        """格式化 NewsAPI 文章"""
-        return {
-            "title": a.get("title") or "无标题",
-            "source": a.get("source", {}).get("name", "未知来源"),
-            "time": (a.get("publishedAt") or "")[:19].replace("T", " "),
-            "url": a.get("url", ""),
-            "content": a.get("content") or a.get("description") or "",
-            "description": a.get("description") or ""
-        }
-
-    # ────────────── 聚合数据 ──────────────
-
-    def _get_juhe(self, category):
-        """从聚合数据获取新闻"""
-        url = "http://v.juhe.cn/toutiao/index"
-        type_code = self.CATEGORY_MAP_JUHE.get(category, "top")
-        params = {"key": self.api_key, "type": type_code}
-
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            data = resp.json()
-            if data.get("error_code") == 0:
-                articles = data.get("result", {}).get("data", [])
-                return [self._format_juhe_article(a) for a in articles]
-            return []
-        except Exception:
-            return []
-
-    def _format_juhe_article(self, a):
-        """格式化聚合数据文章"""
-        return {
-            "title": a.get("title") or "无标题",
-            "source": a.get("author_name") or "未知来源",
-            "time": (a.get("date") or "")[:19],
-            "url": a.get("url", ""),
-            "content": a.get("title", ""),   # 聚合数据不返回正文，需从 URL 抓取
-            "description": a.get("title", "")
-        }
-
-    # ────────────── 全文抓取 ──────────────
+        feeds = self.RSS_FEEDS.get(category, self.RSS_FEEDS["top"])
+        articles = []
+        for feed_url in feeds:
+            try:
+                resp = requests.get(feed_url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                if resp.status_code != 200:
+                    continue
+                root = ET.fromstring(resp.content)
+                items = root.findall(".//item")
+                if not items:
+                    items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+                for item in items:
+                    title = self._get_text(item, "title")
+                    if not title:
+                        continue
+                    link = self._get_text(item, "link")
+                    pub_date = self._get_text(item, "pubDate") or self._get_text(item, "{http://www.w3.org/2005/Atom}published")
+                    desc = self._get_text(item, "description") or self._get_text(item, "{http://www.w3.org/2005/Atom}summary")
+                    if desc:
+                        desc = BeautifulSoup(desc, "lxml").get_text(strip=True)
+                    source_name = self._get_source(feed_url)
+                    articles.append({"title": title, "source": source_name, "time": self._format_time(pub_date), "url": link, "content": desc or title, "description": desc or ""})
+            except Exception:
+                continue
+        if category != "top" and len(articles) < 5:
+            if self._cached_top is None:
+                self._cached_top = self.get_headlines("top")
+            keywords = self.KEYWORDS.get(category, [])
+            for article in self._cached_top:
+                if len(articles) >= page_size:
+                    break
+                title = article.get("title", "")
+                if any(kw in title for kw in keywords):
+                    if article not in articles:
+                        articles.append(article)
+        return articles[:page_size]
 
     def fetch_full_content(self, url):
-        """
-        从新闻 URL 抓取全文
-        使用 BeautifulSoup 解析 HTML，尝试多种常见的内容选择器
-        """
         if not url:
             return "无法获取新闻全文，请访问原文链接查看。"
         try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             resp = requests.get(url, headers=headers, timeout=15)
             resp.encoding = resp.apparent_encoding
             soup = BeautifulSoup(resp.text, "lxml")
-
-            # 移除脚本和样式
             for tag in soup(["script", "style", "nav", "footer", "header"]):
                 tag.decompose()
-
-            # 尝试多种常见的内容选择器
-            selectors = [
-                "article", "div.article-body", "div.article-content",
-                "div.content", "div.news_content", "div#article",
-                "div.article", "main", "div.post-content",
-                "div.article_content", "div.txt"
-            ]
+            selectors = ["article", "div.article-body", "div.article-content", "div.content", "div.news_content", "div#article", "div.article", "main", "div.post-content", "div.article_content", "div.txt", "div.story-body", "div.main-content"]
             for selector in selectors:
                 elem = soup.select_one(selector)
                 if elem:
                     text = elem.get_text(separator="\n", strip=True)
                     if len(text) > 100:
                         return text
-
-            # 回退：获取所有段落
             paragraphs = soup.find_all("p")
-            text = "\n".join(
-                p.get_text(strip=True) for p in paragraphs
-                if len(p.get_text(strip=True)) > 20
-            )
+            text = "\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
             return text if text else "无法获取新闻全文，请访问原文链接查看。"
         except Exception:
             return "无法获取新闻全文，请访问原文链接查看。"
+
+    def _get_text(self, item, tag):
+        elem = item.find(tag)
+        if elem is not None and elem.text:
+            return elem.text.strip()
+        return ""
+
+    def _get_source(self, url):
+        if "bbc" in url:
+            return "BBC中文"
+        elif "chinanews" in url:
+            return "中新网"
+        elif "36kr" in url:
+            return "36氪"
+        else:
+            return "网络"
+
+    def _format_time(self, time_str):
+        if not time_str:
+            return ""
+        try:
+            parts = time_str.split(" ")
+            if len(parts) >= 5:
+                return f"{parts[3]}-{parts[2]}-{parts[1]} {parts[4][:5]}"
+        except Exception:
+            pass
+        return time_str[:19] if len(time_str) >= 19 else time_str
